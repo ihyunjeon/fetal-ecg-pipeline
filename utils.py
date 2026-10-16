@@ -29,16 +29,10 @@ def create_windows(record_path, window_size=2000, step_size=500):
         print(f"Error: File not found at {record_path}")
         return np.array([]), np.array([])
 
-    # Get all data: Shape is (Channels, Time)
-    all_signals = raw.get_data() 
-    
-    # SEPARATE INPUT AND TARGET
-    # Channels 0-3 are Abdominal (Input)
-    abdominal_signals = all_signals[:4, :] 
-    
-    # Channel 4 is Direct Fetal Scalp (Ground Truth Target)
-    # We use slicing [4:5, :] to keep the dimension as (1, Time)
-    scalp_signal = all_signals[4:5, :] 
+    all_signals = raw.get_data()  # (Channels, Time)
+
+    abdominal_signals = all_signals[:4, :]   # channels 0-3: abdominal input
+    scalp_signal = all_signals[4:5, :]       # channel 4: fetal scalp ground truth 
 
     abdominal_signals = butter_bandpass_filter(abdominal_signals, 0.5, 50, fs=1000)
     scalp_signal = butter_bandpass_filter(scalp_signal, 0.5, 50, fs=1000)
@@ -50,14 +44,9 @@ def create_windows(record_path, window_size=2000, step_size=500):
     
     total_len = abdominal_signals.shape[1]
     
-    # Slide the window
     for start in range(0, total_len - window_size, step_size):
         end = start + window_size
-        
-        # Extract Abdominal Window (Input)
         x_window = abdominal_signals[:, start:end]
-        
-        # Extract Scalp Window (Target) - NOW A SIGNAL, NOT A LABEL
         y_window = scalp_signal[:, start:end]
         
         X_list.append(x_window)
@@ -89,20 +78,18 @@ def get_dataloaders(train_files, test_files, batch_size=8):
     """
     Complete pipeline: Loads files -> Converts to Tensor -> Returns DataLoaders
     """
-    print("--- Loading Training Data ---")
+    print("Loading training data...")
     X_train, y_train = load_dataset(train_files)
     
-    print("\n--- Loading Test Data ---")
+    print("Loading test data...")
     X_test, y_test = load_dataset(test_files)
     
     if X_train is None or X_test is None:
         print("Error: Could not load data.")
         return None, None
 
-    # CRITICAL FIX: Convert targets (y) to Float (for Regression), not Long (for Class)
     tensor_x_train = torch.tensor(X_train).float()
-    tensor_y_train = torch.tensor(y_train).float() 
-    
+    tensor_y_train = torch.tensor(y_train).float()
     tensor_x_test = torch.tensor(X_test).float()
     tensor_y_test = torch.tensor(y_test).float()
     
@@ -113,13 +100,9 @@ def get_dataloaders(train_files, test_files, batch_size=8):
     return train_loader, test_loader
 
 def visualize_signals(record_path, start_sec=0, duration_sec=5):
-    """
-    Plots the 4 abdominal channels and the 1 scalp channel.
-    Automatically adds RED DOTTED LINES for Fetal QRS peaks.
-    """
+    """Plots 4 abdominal channels + scalp channel with fetal QRS peak markers."""
     record_name = os.path.basename(record_path).replace('.edf', '')
     
-    # 1. Read Signals
     try:
         raw = mne.io.read_raw_edf(record_path, preload=True, verbose=False)
     except FileNotFoundError:
@@ -129,31 +112,25 @@ def visualize_signals(record_path, start_sec=0, duration_sec=5):
     signals = raw.get_data()
     fs = int(raw.info['sfreq']) 
     
-    # 2. Get QRS Indices (Try Annotation File -> Fallback to Auto-Detection)
+    # Load QRS indices from annotation file, fall back to peak detection
     qrs_indices = []
-    
-    # Method A: Try loading official .qrs file
     try:
         base_path = record_path.replace('.edf', '')
         annotation = wfdb.rdann(base_path, 'qrs')
         qrs_indices = annotation.sample
-        print("✅ Loaded peaks from .qrs annotation file.")
+        print("Loaded peaks from .qrs annotation file.")
     except Exception:
-        # Method B: Automatic Peak Detection on Scalp Channel (Channel 4)
-        print("⚠️ Annotation file not found. Auto-detecting peaks on Scalp channel...")
+        print("Annotation file not found, auto-detecting peaks on scalp channel...")
         scalp_signal = signals[4, :]
-        # Find peaks that are at least 0.5 distance apart and have some height
         peaks, _ = find_peaks(scalp_signal, height=np.mean(scalp_signal)*1.5, distance=fs*0.3)
         qrs_indices = peaks
 
-    # 3. Calculate Plot Window
     start_sample = int(start_sec * fs)
     end_sample = int((start_sec + duration_sec) * fs)
     if end_sample > signals.shape[1]: end_sample = signals.shape[1]
     
     time_axis = np.linspace(start_sec, start_sec + duration_sec, end_sample - start_sample)
     
-    # 4. Plot
     fig, axes = plt.subplots(5, 1, figsize=(12, 12), sharex=True)
     fig.suptitle(f"Record: {record_name} (Time: {start_sec}s - {start_sec+duration_sec}s)", fontsize=16)
 
@@ -162,24 +139,19 @@ def visualize_signals(record_path, start_sec=0, duration_sec=5):
     for i in range(5):
         ax = axes[i]
         
-        # Plot Signal
         ax.plot(time_axis, signals[i, start_sample:end_sample], color='black', linewidth=0.8)
-        
-        # --- THE RED DOTTED LINES ---
-        # Filter for peaks inside this specific time window
+
+        # Overlay QRS peak markers
         beats_in_window = qrs_indices[(qrs_indices >= start_sample) & (qrs_indices < end_sample)]
-        
         for beat_idx in beats_in_window:
-            # Convert sample index to time (seconds)
             beat_time = beat_idx / fs
-            # Draw the red line
             ax.axvline(x=beat_time, color='red', linestyle='--', linewidth=1.5, alpha=0.7)
         
         ax.set_title(channel_names[i], loc='left', fontsize=10, fontweight='bold')
         ax.grid(True, alpha=0.3)
         
         if i == 4:
-            ax.set_facecolor('#f0fff0') # Light green for target
+            ax.set_facecolor('#f0fff0')
             ax.set_ylabel("Amplitude")
 
     axes[-1].set_xlabel("Time (seconds)")
